@@ -1,96 +1,111 @@
-
 import streamlit as st
-import tempfile, os, hashlib, cv2, numpy as np
+import os
+import hashlib
 
-from utils import (
-    file_sha256,
-    get_video_basic_info,
-    extract_keyframes_every_n_seconds,
-    compute_blur_scores,
-    read_metadata_hachoir,
-    extract_audio_waveform,
-    plot_waveform,
-    plot_spectrogram,
-)
+# --- Safe imports ---
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
-st.set_page_config(page_title="Video Authenticity Toolkit", layout="wide")
-st.title("🎥 Video Authenticity Toolkit")
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
-st.write("Upload a video to analyze metadata, extract frames, and inspect audio patterns.")
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
-uploaded = st.file_uploader("Choose a video", type=["mp4","mov","avi","mkv"])
-n_seconds = st.number_input("Extract a frame every N seconds", min_value=1, max_value=30, value=3, step=1)
-run = st.button("Run analysis")
+try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
 
-if uploaded and run:
-    with st.spinner("Saving video..."):
-        tdir = tempfile.TemporaryDirectory()
-        vpath = os.path.join(tdir.name, uploaded.name)
-        with open(vpath, "wb") as f:
-            f.write(uploaded.read())
+try:
+    from hachoir.parser import createParser
+    from hachoir.metadata import extractMetadata
+except ImportError:
+    createParser = None
+    extractMetadata = None
 
-    # Hash & basics
-    sha = file_sha256(vpath)
-    info = get_video_basic_info(vpath)
+try:
+    import ffmpeg
+except ImportError:
+    ffmpeg = None
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("📄 File & Technical Info")
-        st.write(f"**Filename:** {os.path.basename(vpath)}")
-        st.write(f"**SHA-256:** `{sha}`")
-        if info:
-            st.write(f"**Resolution:** {info['width']} × {info['height']}")
-            st.write(f"**FPS:** {info['fps']:.2f}")
-            st.write(f"**Duration:** {info['duration_sec']:.2f} sec")
-            st.write(f"**Total Frames (approx):** {info['frame_count']}")
-        else:
-            st.warning("Couldn't read basic info via OpenCV.")
+try:
+    from pydub import AudioSegment
+except ImportError:
+    AudioSegment = None
 
-        with st.expander("Raw metadata (Hachoir)"):
-            meta = read_metadata_hachoir(vpath)
-            if meta:
-                st.json(meta)
+try:
+    from scipy.io import wavfile
+except ImportError:
+    wavfile = None
+
+
+def calculate_sha256(file_path):
+    sha256_hash = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for byte_block in iter(lambda: f.read(4096), b""):
+            sha256_hash.update(byte_block)
+    return sha256_hash.hexdigest()
+
+
+st.title("🎥 Video Authenticity Toolkit — Error-Proof Version")
+uploaded_file = st.file_uploader("Upload a video file", type=["mp4", "mov", "avi", "mkv"])
+
+if uploaded_file:
+    temp_path = os.path.join("temp_video", uploaded_file.name)
+    os.makedirs("temp_video", exist_ok=True)
+    with open(temp_path, "wb") as f:
+        f.write(uploaded_file.read())
+
+    st.subheader("File Information")
+    st.write(f"**File name:** {uploaded_file.name}")
+    st.write(f"**SHA-256 hash:** {calculate_sha256(temp_path)}")
+
+    # --- Metadata extraction ---
+    st.subheader("Metadata Extraction")
+    if createParser and extractMetadata:
+        parser = createParser(temp_path)
+        if parser:
+            metadata = extractMetadata(parser)
+            if metadata:
+                for item in metadata.exportPlaintext():
+                    st.write(item)
             else:
-                st.info("No readable metadata found (common for social uploads).")
-
-    with c2:
-        st.subheader("🎞️ Keyframes & Blur Scores")
-        frames, ts = extract_keyframes_every_n_seconds(vpath, n_seconds=n_seconds, limit=120)
-        if frames:
-            scores = compute_blur_scores(frames)
-            cols = st.columns(3)
-            for i, (img, tstamp, sc) in enumerate(zip(frames, ts, scores)):
-                with cols[i % 3]:
-                    st.image(img, use_column_width=True, caption=f"t={tstamp:.1f}s | blur={sc:.1f}")
-            st.caption("Tip: Large jumps/dips in sharpness may hint at edits/compositing or re-encodes.")
+                st.write("No metadata found.")
         else:
-            st.warning("No frames extracted. Video may be too short or unreadable.")
+            st.write("Could not parse video metadata.")
+    else:
+        st.warning("⚠️ Metadata feature skipped — hachoir not installed.")
 
-    st.subheader("🔊 Audio inspection")
-    try:
-        wav_path, sr, y = extract_audio_waveform(vpath)
-        if y is not None and len(y) > 0:
-            st.write(f"Sample rate: {sr} Hz")
-            wf = plot_waveform(y, sr)
-            st.pyplot(wf, clear_figure=True)
-            spec = plot_spectrogram(y, sr)
-            st.pyplot(spec, clear_figure=True)
-            st.caption("Look for abrupt silence, copy‑paste patterns, or mismatched noise floors between cuts.")
+    # --- Frame analysis ---
+    st.subheader("Frame Analysis")
+    if cv2 and np:
+        cap = cv2.VideoCapture(temp_path)
+        if not cap.isOpened():
+            st.error("Could not open video.")
         else:
-            st.info("No audio stream found or couldn't extract audio (ffmpeg may be missing).")
-    except Exception as e:
-        st.info(f"Audio analysis skipped: {e}")
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            st.write(f"**FPS:** {fps}")
+            st.write(f"**Total frames:** {frame_count}")
+            st.write(f"**Duration (sec):** {frame_count / fps if fps else 'Unknown'}")
+            cap.release()
+    else:
+        st.warning("⚠️ Frame analysis skipped — OpenCV/Numpy not installed.")
 
-    st.subheader("🧰 Investigation checklist")
-    st.markdown("""
-- ✅ **Context**: Does reputable news match the date/place?
-- 🔎 **Reverse search**: Screenshot keyframes → Google Lens/TinEye.
-- 👀 **Visual seams**: Warped backgrounds, mismatched shadows/reflections.
-- 🧍 **Faces/Hands**: Unnatural blinking, teeth/ear/finger glitches.
-- 🎧 **Audio**: Consistent ambience/noise floor across cuts?
-- 🗂️ **Metadata**: Plausible camera info & creation time?
-- 🧾 **Source**: Who posted first? Any original upload?
-    """)
-
-else:
-    st.info("Upload a video and press **Run analysis**.")
+    # --- Audio analysis ---
+    st.subheader("Audio Analysis")
+    if AudioSegment and ffmpeg:
+        try:
+            audio = AudioSegment.from_file(temp_path)
+            st.write(f"Audio channels: {audio.channels}, Frame rate: {audio.frame_rate}")
+        except Exception as e:
+            st.error(f"Audio extraction failed: {e}")
+    else:
+        st.warning("⚠️ Audio analysis skipped — ffmpeg/pydub not installed.")
