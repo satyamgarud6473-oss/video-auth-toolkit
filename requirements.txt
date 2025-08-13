@@ -1,8 +1,8 @@
+
 streamlit
-ffmpeg-python
-matplotlib
-pandas
-numpy
 opencv-python
+pillow
+hachoir
 pydub
-scipy
+matplotlib
+numpy
